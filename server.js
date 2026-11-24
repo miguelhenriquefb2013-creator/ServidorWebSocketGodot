@@ -13,6 +13,10 @@ const server = app.listen(PORT, () => {
 const wss = new WebSocket.Server({ server });
 const rooms = new Map();
 
+// ========================
+// UTILITÁRIOS
+// ========================
+
 function generateRoomCode(length = 5) {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let result = "";
@@ -24,14 +28,18 @@ function generateRoomCode(length = 5) {
     return result;
 }
 
+function sendToSocket(socket, command, content = {}) {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+            cmd: command,
+            content
+        }));
+    }
+}
+
 function sendToRoom(room, command, content = {}) {
     for (const client of Object.values(room.players)) {
-        if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-                cmd: command,
-                content
-            }));
-        }
+        sendToSocket(client, command, content);
     }
 }
 
@@ -49,6 +57,10 @@ function sendReadyUpdate(room) {
         total: getRoomPlayerCount(room)
     });
 }
+
+// ========================
+// SISTEMA DE JOGADORES
+// ========================
 
 const playerlist = {
     players: [],
@@ -69,47 +81,90 @@ const playerlist = {
         };
 
         this.players.push(player);
+
         return player;
     },
 
     update(uuid, newX, newY, newZ, newRY) {
         const player = this.get(uuid);
 
-        if (player) {
-            player.x = newX;
-            player.y = newY;
-            player.z = newZ;
-            player.r_y = newRY;
-        }
+        if (!player) return;
+
+        player.x = newX;
+        player.y = newY;
+        player.z = newZ;
+        player.r_y = newRY;
     },
 
     remove(uuid) {
-        this.players = this.players.filter(player => player.uuid !== uuid);
+        this.players = this.players.filter(
+            player => player.uuid !== uuid
+        );
     },
 
     getByRoom(roomCode) {
-        return this.players.filter(player => player.room === roomCode);
+        return this.players.filter(
+            player => player.room === roomCode
+        );
     }
 };
 
+// ========================
+// INICIAR MISSÃO
+// ========================
+
+function tryStartMission(room, roomCode) {
+    if (!room) return;
+
+    if (room.missionStarted) return;
+
+    if (room.missionId === null) return;
+
+    const total = getRoomPlayerCount(room);
+    const ready = getReadyCount(room);
+
+    if (total === 0) return;
+
+    if (ready !== total) return;
+
+    room.missionStarted = true;
+
+    console.log(
+        `Iniciando missão ${room.missionId} na sala ${roomCode}`
+    );
+
+    sendToRoom(room, "mission_started", {
+        mission_id: room.missionId
+    });
+}
+
+// ========================
+// WEBSOCKET
+// ========================
+
 wss.on("connection", (socket) => {
+
     const uuid = uuidv4();
     socket.uuid = uuid;
 
     console.log(`Cliente conectado: ${uuid}`);
 
-    socket.send(JSON.stringify({
-        cmd: "joined_server",
-        content: { uuid }
-    }));
+    sendToSocket(socket, "joined_server", {
+        uuid
+    });
 
     socket.on("message", (message) => {
+
         let data;
 
         try {
             data = JSON.parse(message.toString());
         } catch (err) {
             console.error("Erro ao interpretar mensagem:", err);
+            return;
+        }
+
+        if (!data || typeof data.cmd !== "string") {
             return;
         }
 
@@ -122,6 +177,14 @@ wss.on("connection", (socket) => {
             // ========================
 
             case "create_room": {
+
+                if (socket.roomId) {
+                    sendToSocket(socket, "error", {
+                        msg: "Você já está em uma sala."
+                    });
+                    return;
+                }
+
                 let newRoomId;
 
                 do {
@@ -134,25 +197,28 @@ wss.on("connection", (socket) => {
                     players: {},
                     missionId: null,
                     readyPlayers: new Set(),
-                    missionStarted: false
+                    missionStarted: false,
+                    lobbyStarted: false
                 };
 
                 rooms.set(newRoomId, room);
+
                 room.players[uuid] = socket;
 
-                const newPlayer = playerlist.add(uuid, newRoomId);
+                const newPlayer = playerlist.add(
+                    uuid,
+                    newRoomId
+                );
 
                 console.log(`Sala ${newRoomId} criada por ${uuid}`);
 
-                socket.send(JSON.stringify({
-                    cmd: "room_created",
-                    content: { code: newRoomId }
-                }));
+                sendToSocket(socket, "room_created", {
+                    code: newRoomId
+                });
 
-                socket.send(JSON.stringify({
-                    cmd: "spawn_local_player",
-                    content: { player: newPlayer }
-                }));
+                sendToSocket(socket, "spawn_local_player", {
+                    player: newPlayer
+                });
 
                 break;
             }
@@ -162,75 +228,107 @@ wss.on("connection", (socket) => {
             // ========================
 
             case "join_room": {
-                const roomCode = String(content.code || "").toUpperCase();
-                const roomToJoin = rooms.get(roomCode);
 
-                if (!roomToJoin) {
-                    socket.send(JSON.stringify({
-                        cmd: "error",
-                        content: { msg: "Sala não encontrada." }
-                    }));
+                if (socket.roomId) {
+                    sendToSocket(socket, "error", {
+                        msg: "Você já está em uma sala."
+                    });
                     return;
                 }
 
-                if (roomToJoin.missionId !== null || roomToJoin.missionStarted) {
-                    socket.send(JSON.stringify({
-                        cmd: "error",
-                        content: { msg: "A sala já está preparando uma missão." }
-                    }));
+                const roomCode = String(
+                    content.code || ""
+                ).toUpperCase();
+
+                const roomToJoin = rooms.get(roomCode);
+
+                if (!roomToJoin) {
+                    sendToSocket(socket, "error", {
+                        msg: "Sala não encontrada."
+                    });
+                    return;
+                }
+
+                if (roomToJoin.missionStarted) {
+                    sendToSocket(socket, "error", {
+                        msg: "A missão já começou."
+                    });
                     return;
                 }
 
                 socket.roomId = roomCode;
+
                 roomToJoin.players[uuid] = socket;
 
-                const newPlayer = playerlist.add(uuid, roomCode);
+                const newPlayer = playerlist.add(
+                    uuid,
+                    roomCode
+                );
 
-                console.log(`Jogador ${uuid} entrou na sala ${roomCode}`);
+                console.log(
+                    `Jogador ${uuid} entrou na sala ${roomCode}`
+                );
 
-                socket.send(JSON.stringify({
-                    cmd: "room_joined",
-                    content: { code: roomCode }
-                }));
+                sendToSocket(socket, "room_joined", {
+                    code: roomCode
+                });
 
-                socket.send(JSON.stringify({
-                    cmd: "spawn_local_player",
-                    content: { player: newPlayer }
-                }));
+                sendToSocket(socket, "spawn_local_player", {
+                    player: newPlayer
+                });
 
-                const roomPlayers = playerlist.getByRoom(roomCode)
+                const roomPlayers = playerlist
+                    .getByRoom(roomCode)
                     .filter(player => player.uuid !== uuid);
 
-                socket.send(JSON.stringify({
-                    cmd: "spawn_network_players",
-                    content: { players: roomPlayers }
-                }));
+                sendToSocket(socket, "spawn_network_players", {
+                    players: roomPlayers
+                });
+
+                // AVISAR OS OUTROS JOGADORES
 
                 for (const clientUuid in roomToJoin.players) {
+
                     const client = roomToJoin.players[clientUuid];
 
-                    if (client !== socket && client.readyState === WebSocket.OPEN) {
-                        client.send(JSON.stringify({
-                            cmd: "spawn_new_player",
-                            content: { player: newPlayer }
-                        }));
+                    if (client !== socket) {
+                        sendToSocket(client, "spawn_new_player", {
+                            player: newPlayer
+                        });
                     }
                 }
 
-                // MANTIDO: leva os jogadores do menu ao lobby.
-                if (Object.keys(roomToJoin.players).length >= 2) {
-                    console.log(`Sala ${roomCode} atingiu o número de jogadores. Começando o jogo!`);
+                // INICIAR O LOBBY UMA ÚNICA VEZ
 
-                    for (const clientUuid in roomToJoin.players) {
-                        const client = roomToJoin.players[clientUuid];
+                if (
+                    getRoomPlayerCount(roomToJoin) >= 2 &&
+                    !roomToJoin.lobbyStarted
+                ) {
 
-                        if (client.readyState === WebSocket.OPEN) {
-                            client.send(JSON.stringify({
-                                cmd: "start_game",
-                                content: {}
-                            }));
-                        }
-                    }
+                    roomToJoin.lobbyStarted = true;
+
+                    console.log(
+                        `Sala ${roomCode} iniciou o lobby!`
+                    );
+
+                    sendToRoom(roomToJoin, "start_game", {});
+
+                } else if (roomToJoin.lobbyStarted) {
+
+                    // JOGADOR NOVO TAMBÉM VAI PARA O LOBBY
+
+                    sendToSocket(socket, "start_game", {});
+                }
+
+                // SINCRONIZAR MISSÃO EM PREPARAÇÃO
+
+                if (roomToJoin.missionId !== null) {
+
+                    sendToSocket(socket, "mission_selected", {
+                        mission_id: roomToJoin.missionId
+                    });
+
+                    sendReadyUpdate(roomToJoin);
                 }
 
                 break;
@@ -241,35 +339,52 @@ wss.on("connection", (socket) => {
             // ========================
 
             case "select_mission": {
+
                 const room = rooms.get(socket.roomId);
-                const missionId = content.mission_id;
 
-                if (!room || room.missionStarted) return;
+                if (!room || !room.players[uuid]) return;
 
-                if (typeof missionId !== "string" || missionId.length === 0) {
+                if (!room.lobbyStarted || room.missionStarted) {
                     return;
                 }
 
+                const missionId = content.mission_id;
+
+                if (
+                    typeof missionId !== "string" ||
+                    missionId.trim().length === 0
+                ) {
+                    return;
+                }
+
+                // PRIMEIRA SELEÇÃO
+
                 if (room.missionId === null) {
+
                     room.missionId = missionId;
                     room.readyPlayers.clear();
 
-                    console.log(`Sala ${socket.roomId} selecionou ${missionId}`);
+                    console.log(
+                        `Sala ${socket.roomId} selecionou ${missionId}`
+                    );
+
                 } else if (room.missionId !== missionId) {
-                    socket.send(JSON.stringify({
-                        cmd: "error",
-                        content: {
-                            msg: "Outro jogador já selecionou uma missão diferente."
-                        }
-                    }));
+
+                    sendToSocket(socket, "error", {
+                        msg: "Outro jogador já selecionou uma missão diferente."
+                    });
+
                     return;
                 }
+
+                // AVISAR TODOS
 
                 sendToRoom(room, "mission_selected", {
                     mission_id: room.missionId
                 });
 
                 sendReadyUpdate(room);
+
                 break;
             }
 
@@ -278,13 +393,17 @@ wss.on("connection", (socket) => {
             // ========================
 
             case "player_ready": {
+
                 const room = rooms.get(socket.roomId);
 
-                if (!room || room.missionStarted || room.missionId === null) {
+                if (!room || !room.players[uuid]) return;
+
+                if (
+                    room.missionStarted ||
+                    room.missionId === null
+                ) {
                     return;
                 }
-
-                if (!room.players[uuid]) return;
 
                 room.readyPlayers.add(uuid);
 
@@ -294,19 +413,9 @@ wss.on("connection", (socket) => {
 
                 sendReadyUpdate(room);
 
-                // TODOS OS JOGADORES PRECISAM ESTAR PRONTOS.
-                if (
-                    getRoomPlayerCount(room) > 0 &&
-                    getReadyCount(room) === getRoomPlayerCount(room)
-                ) {
-                    room.missionStarted = true;
+                // VERIFICAR SE TODOS ESTÃO PRONTOS
 
-                    console.log(`Iniciando missão ${room.missionId} na sala ${socket.roomId}`);
-
-                    sendToRoom(room, "mission_started", {
-                        mission_id: room.missionId
-                    });
-                }
+                tryStartMission(room, socket.roomId);
 
                 break;
             }
@@ -316,6 +425,11 @@ wss.on("connection", (socket) => {
             // ========================
 
             case "position": {
+
+                const room = rooms.get(socket.roomId);
+
+                if (!room || !room.players[uuid]) return;
+
                 playerlist.update(
                     uuid,
                     content.x,
@@ -324,25 +438,20 @@ wss.on("connection", (socket) => {
                     content.r_y
                 );
 
-                const room = rooms.get(socket.roomId);
+                for (const clientUuid in room.players) {
 
-                if (room) {
-                    for (const clientUuid in room.players) {
-                        const client = room.players[clientUuid];
+                    const client = room.players[clientUuid];
 
-                        if (client !== socket && client.readyState === WebSocket.OPEN) {
-                            client.send(JSON.stringify({
-                                cmd: "update_position",
-                                content: {
-                                    uuid,
-                                    x: content.x,
-                                    y: content.y,
-                                    z: content.z,
-                                    r_y: content.r_y,
-                                    moving: content.moving
-                                }
-                            }));
-                        }
+                    if (client !== socket) {
+
+                        sendToSocket(client, "update_position", {
+                            uuid,
+                            x: content.x,
+                            y: content.y,
+                            z: content.z,
+                            r_y: content.r_y,
+                            moving: content.moving
+                        });
                     }
                 }
 
@@ -354,14 +463,15 @@ wss.on("connection", (socket) => {
             // ========================
 
             case "chat": {
+
                 const room = rooms.get(socket.roomId);
 
-                if (room) {
-                    sendToRoom(room, "new_chat_message", {
-                        uuid,
-                        msg: content.msg
-                    });
-                }
+                if (!room || !room.players[uuid]) return;
+
+                sendToRoom(room, "new_chat_message", {
+                    uuid,
+                    msg: content.msg
+                });
 
                 break;
             }
@@ -373,37 +483,62 @@ wss.on("connection", (socket) => {
     // ========================
 
     socket.on("close", () => {
+
         console.log(`Cliente desconectado: ${uuid}`);
 
         playerlist.remove(uuid);
 
-        const room = rooms.get(socket.roomId);
+        const roomCode = socket.roomId;
+        const room = rooms.get(roomCode);
 
         if (!room) return;
 
         delete room.players[uuid];
+
         room.readyPlayers.delete(uuid);
 
-        for (const clientUuid in room.players) {
-            const client = room.players[clientUuid];
+        // AVISAR OS OUTROS JOGADORES
 
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({
-                    cmd: "player_disconnected",
-                    content: { uuid }
-                }));
-            }
-        }
+        sendToRoom(room, "player_disconnected", {
+            uuid
+        });
+
+        // REMOVER SALA VAZIA
 
         if (getRoomPlayerCount(room) === 0) {
-            rooms.delete(socket.roomId);
-            console.log(`Sala ${socket.roomId} vazia e removida.`);
+
+            rooms.delete(roomCode);
+
+            console.log(
+                `Sala ${roomCode} vazia e removida.`
+            );
+
             return;
         }
 
-        if (!room.missionStarted && room.missionId !== null) {
+        // ATUALIZAR PREPARAÇÃO
+
+        if (room.missionId !== null && !room.missionStarted) {
+
             sendReadyUpdate(room);
+
+            // SE TODOS OS RESTANTES JÁ ESTIVEREM PRONTOS,
+            // INICIAR A MISSÃO.
+
+            tryStartMission(room, roomCode);
         }
     });
 });
-                
+
+// ========================
+// ERROS DO SERVIDOR
+// ========================
+
+wss.on("error", (error) => {
+    console.error("Erro no WebSocket:", error);
+});
+
+server.on("error", (error) => {
+    console.error("Erro no servidor:", error);
+});
+       
