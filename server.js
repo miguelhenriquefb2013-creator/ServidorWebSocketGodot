@@ -81,6 +81,7 @@ const playerlist = {
         };
 
         this.players.push(player);
+
         return player;
     },
 
@@ -114,24 +115,26 @@ const playerlist = {
 
 function tryStartMission(room, roomCode) {
     if (!room) return;
+
     if (room.missionStarted) return;
+
     if (room.missionId === null) return;
-    if (room.mapNumber === null) return;
 
     const total = getRoomPlayerCount(room);
     const ready = getReadyCount(room);
 
-    if (total === 0 || ready !== total) return;
+    if (total === 0) return;
+
+    if (ready !== total) return;
 
     room.missionStarted = true;
 
     console.log(
-        `Iniciando missão ${room.missionId} | Mapa ${room.mapNumber} | Sala ${roomCode}`
+        `Iniciando missão ${room.missionId} na sala ${roomCode}`
     );
 
     sendToRoom(room, "mission_started", {
-        mission_id: room.missionId,
-        map_number: room.mapNumber
+        mission_id: room.missionId
     });
 }
 
@@ -193,14 +196,13 @@ wss.on("connection", (socket) => {
                 const room = {
                     players: {},
                     missionId: null,
-                    mapCount: 0,
-                    mapNumber: null,
                     readyPlayers: new Set(),
                     missionStarted: false,
                     lobbyStarted: false
                 };
 
                 rooms.set(newRoomId, room);
+
                 room.players[uuid] = socket;
 
                 const newPlayer = playerlist.add(
@@ -255,6 +257,7 @@ wss.on("connection", (socket) => {
                 }
 
                 socket.roomId = roomCode;
+
                 roomToJoin.players[uuid] = socket;
 
                 const newPlayer = playerlist.add(
@@ -285,6 +288,7 @@ wss.on("connection", (socket) => {
                 // AVISAR OS OUTROS JOGADORES
 
                 for (const clientUuid in roomToJoin.players) {
+
                     const client = roomToJoin.players[clientUuid];
 
                     if (client !== socket) {
@@ -311,16 +315,17 @@ wss.on("connection", (socket) => {
 
                 } else if (roomToJoin.lobbyStarted) {
 
+                    // JOGADOR NOVO TAMBÉM VAI PARA O LOBBY
+
                     sendToSocket(socket, "start_game", {});
                 }
 
-                // SINCRONIZAR MISSÃO E MAPA
+                // SINCRONIZAR MISSÃO EM PREPARAÇÃO
 
                 if (roomToJoin.missionId !== null) {
 
                     sendToSocket(socket, "mission_selected", {
-                        mission_id: roomToJoin.missionId,
-                        map_number: roomToJoin.mapNumber
+                        mission_id: roomToJoin.missionId
                     });
 
                     sendReadyUpdate(roomToJoin);
@@ -344,71 +349,38 @@ wss.on("connection", (socket) => {
                 }
 
                 const missionId = content.mission_id;
-                const mapCount = content.map_count;
 
                 if (
                     typeof missionId !== "string" ||
                     missionId.trim().length === 0
                 ) {
-                    sendToSocket(socket, "error", {
-                        msg: "Identificador de missão inválido."
-                    });
                     return;
                 }
 
-                if (
-                    !Number.isInteger(mapCount) ||
-                    mapCount < 1 ||
-                    mapCount > 100
-                ) {
-                    sendToSocket(socket, "error", {
-                        msg: "Quantidade de mapas inválida."
-                    });
-                    return;
-                }
-
-                // PRIMEIRA SELEÇÃO: SORTEAR O MAPA
+                // PRIMEIRA SELEÇÃO
 
                 if (room.missionId === null) {
 
                     room.missionId = missionId;
-                    room.mapCount = mapCount;
-
-                    room.mapNumber = Math.floor(
-                        Math.random() * room.mapCount
-                    ) + 1;
-
                     room.readyPlayers.clear();
 
                     console.log(
-                        `Missão selecionada: ${missionId}`
+                        `Sala ${socket.roomId} selecionou ${missionId}`
                     );
 
-                    console.log(
-                        `Mapa sorteado: ${room.mapNumber}/${room.mapCount}`
-                    );
+                } else if (room.missionId !== missionId) {
 
-                } else {
+                    sendToSocket(socket, "error", {
+                        msg: "Outro jogador já selecionou uma missão diferente."
+                    });
 
-                    // NÃO PERMITIR OUTRA MISSÃO OU OUTRO MAP_COUNT
-
-                    if (
-                        room.missionId !== missionId ||
-                        room.mapCount !== mapCount
-                    ) {
-                        sendToSocket(socket, "error", {
-                            msg: "A sala já possui outra missão selecionada."
-                        });
-
-                        return;
-                    }
+                    return;
                 }
 
-                // AVISAR TODOS SOBRE A MISSÃO E O MAPA
+                // AVISAR TODOS
 
                 sendToRoom(room, "mission_selected", {
-                    mission_id: room.missionId,
-                    map_number: room.mapNumber
+                    mission_id: room.missionId
                 });
 
                 sendReadyUpdate(room);
@@ -428,8 +400,7 @@ wss.on("connection", (socket) => {
 
                 if (
                     room.missionStarted ||
-                    room.missionId === null ||
-                    room.mapNumber === null
+                    room.missionId === null
                 ) {
                     return;
                 }
@@ -441,6 +412,8 @@ wss.on("connection", (socket) => {
                 );
 
                 sendReadyUpdate(room);
+
+                // VERIFICAR SE TODOS ESTÃO PRONTOS
 
                 tryStartMission(room, socket.roomId);
 
@@ -521,6 +494,7 @@ wss.on("connection", (socket) => {
         if (!room) return;
 
         delete room.players[uuid];
+
         room.readyPlayers.delete(uuid);
 
         // AVISAR OS OUTROS JOGADORES
@@ -548,6 +522,9 @@ wss.on("connection", (socket) => {
 
             sendReadyUpdate(room);
 
+            // SE TODOS OS RESTANTES JÁ ESTIVEREM PRONTOS,
+            // INICIAR A MISSÃO.
+
             tryStartMission(room, roomCode);
         }
     });
@@ -564,4 +541,4 @@ wss.on("error", (error) => {
 server.on("error", (error) => {
     console.error("Erro no servidor:", error);
 });
-                         
+       
