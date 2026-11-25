@@ -194,12 +194,14 @@ wss.on("connection", (socket) => {
                 socket.roomId = newRoomId;
 
                 const room = {
-                    players: {},
-                    missionId: null,
-                    readyPlayers: new Set(),
-                    missionStarted: false,
-                    lobbyStarted: false
-                };
+    players: {},
+    hostUuid: uuid,
+    killerState: null,
+    missionId: null,
+    readyPlayers: new Set(),
+    missionStarted: false,
+    lobbyStarted: false
+};
 
                 rooms.set(newRoomId, room);
 
