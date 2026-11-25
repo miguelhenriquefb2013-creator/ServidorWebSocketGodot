@@ -215,7 +215,7 @@ wss.on("connection", (socket) => {
                 console.log(`Sala ${newRoomId} criada por ${uuid}`);
 
                 sendToSocket(socket, "room_created", {
-                    code: newRoomId
+                    code: newRoomId,
                     host_uuid: room.hostUuid
                 });
 
