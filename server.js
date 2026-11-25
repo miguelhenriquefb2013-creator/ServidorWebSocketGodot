@@ -287,7 +287,11 @@ wss.on("connection", (socket) => {
 
                 sendToSocket(socket, "spawn_network_players", {
                     players: roomPlayers
-                });
+                    if (roomToJoin.killerState !== null) {
+    sendToSocket(socket, "killer_update", {
+        ...roomToJoin.killerState
+    });
+                    }
 
                 // AVISAR OS OUTROS JOGADORES
 
@@ -525,6 +529,22 @@ case "killer_position": {
         if (!room) return;
 
         delete room.players[uuid];
+        // TRANSFERIR HOST
+
+if (room.hostUuid === uuid) {
+
+    room.hostUuid = Object.keys(room.players)[0] || null;
+
+    if (room.hostUuid) {
+        sendToRoom(room, "host_changed", {
+            host_uuid: room.hostUuid
+        });
+
+        console.log(
+            `Novo host da sala ${roomCode}: ${room.hostUuid}`
+        );
+    }
+}
 
         room.readyPlayers.delete(uuid);
 
