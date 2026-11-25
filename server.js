@@ -286,12 +286,16 @@ wss.on("connection", (socket) => {
                     .filter(player => player.uuid !== uuid);
 
                 sendToSocket(socket, "spawn_network_players", {
-                    players: roomPlayers
-                    if (roomToJoin.killerState !== null) {
+    players: roomPlayers
+});
+
+// ENVIAR POSIÇÃO DO KILLER
+
+if (roomToJoin.killerState !== null) {
     sendToSocket(socket, "killer_update", {
         ...roomToJoin.killerState
     });
-                    }
+}
 
                 // AVISAR OS OUTROS JOGADORES
 
