@@ -216,6 +216,7 @@ wss.on("connection", (socket) => {
 
                 sendToSocket(socket, "room_created", {
                     code: newRoomId
+                    host_uuid: room.hostUuid
                 });
 
                 sendToSocket(socket, "spawn_local_player", {
@@ -272,8 +273,9 @@ wss.on("connection", (socket) => {
                 );
 
                 sendToSocket(socket, "room_joined", {
-                    code: roomCode
-                });
+    code: roomCode,
+    host_uuid: roomToJoin.hostUuid
+});
 
                 sendToSocket(socket, "spawn_local_player", {
                     player: newPlayer
@@ -459,7 +461,34 @@ wss.on("connection", (socket) => {
 
                 break;
             }
+// ========================
+// SINCRONIZAÇÃO DO KILLER
+// ========================
 
+case "killer_position": {
+
+    const room = rooms.get(socket.roomId);
+
+    if (!room || !room.players[uuid]) return;
+
+    // Somente o host pode controlar o Killer.
+    if (room.hostUuid !== uuid) return;
+
+    const { x, y, z, r_y } = content;
+
+    if (![x, y, z, r_y].every(Number.isFinite)) {
+        return;
+    }
+
+    room.killerState = {
+        x, y, z, r_y
+    };
+
+    // Enviar para todos os jogadores da sala.
+    sendToRoom(room, "killer_update", room.killerState);
+
+    break;
+}
             // ========================
             // CHAT
             // ========================
